@@ -1,14 +1,22 @@
 FROM node:20-alpine
 
+# Install FFmpeg and dependencies
+RUN apk add --no-cache ffmpeg bash
+
+# Set working directory
 WORKDIR /app
 
-# Install FFmpeg
-RUN apk add --no-cache ffmpeg
-
+# Copy package files
 COPY package*.json ./
+
+# Install production dependencies
 RUN npm install --only=production
 
+# Copy all files
 COPY . .
 
-ENV PORT=8080
+# Expose the port required by Cloud Run
+EXPOSE 8080
+
+# Start the server
 CMD ["npm", "start"]
