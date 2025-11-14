@@ -1,28 +1,60 @@
 const express = require("express");
+const {Storage} = require("@google-cloud/storage");
+const {exec} = require("child_process");
+const path = require("path");
+const fs = require("fs");
+
 const app = express();
+const storage = new Storage();
 
-app.use(express.json());
+const AUDIO_BUCKET = "video-audioyt";
+const IMAGE_BUCKET = "video-imagesyt";
+const OUTPUT_BUCKET = "video-finalyt";
 
-// health check route
-app.get("/", (req, res) => {
-  res.send("YouTube autopilot Cloud Run service is running.");
-});
-
-// yeh route baad mein autopilot banega (Google Sheet se title utha ke video banane ke liye)
 app.post("/process-next-video", async (req, res) => {
-  console.log("Received request to process next video...");
+  console.log("Starting test video generation...");
 
-  // TODO:
-  // 1) Google Sheet se next row read karna
-  // 2) Lamba script generate karna (LLM se)
-  // 3) Google TTS se voice banana
-  // 4) Images generate + FFmpeg se video banana
-  // 5) YouTube API se upload karna
+  const audioFile = "test.mp3";
+  const imageFile = "test.jpg";
+  const outputFile = "output-test.mp4";
 
-  res.json({ ok: true, message: "Placeholder: processing logic will be added here." });
+  try {
+    // Download files
+    await storage.bucket(AUDIO_BUCKET).file(audioFile).download({destination: audioFile});
+    await storage.bucket(IMAGE_BUCKET).file(imageFile).download({destination: imageFile});
+
+    console.log("Files downloaded!");
+
+    // FFmpeg test command: combine image + audio → MP4
+    const ffmpegCmd = `ffmpeg -loop 1 -i ${imageFile} -i ${audioFile} -c:v libx264 -t 10 -pix_fmt yuv420p -vf scale=1280:720 ${outputFile}`;
+
+    exec(ffmpegCmd, async (err) => {
+      if (err) {
+        console.error("FFmpeg Error:", err);
+        return res.status(500).json({error: "FFmpeg failed"});
+      }
+
+      console.log("FFmpeg success! Uploading...");
+
+      await storage.bucket(OUTPUT_BUCKET).upload(outputFile);
+
+      console.log("Upload done!");
+
+      // Cleanup local files
+      fs.unlinkSync(audioFile);
+      fs.unlinkSync(imageFile);
+      fs.unlinkSync(outputFile);
+
+      return res.json({success: true, message: "Test video created + uploaded!"});
+    });
+
+  } catch (error) {
+    console.error("Error:", error);
+    res.status(500).json({error: error.message});
+  }
 });
+
+app.get("/", (req, res) => res.send("Autopilot Test Ready!"));
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-});
+app.listen(PORT, () => console.log("Server running on port", PORT));
