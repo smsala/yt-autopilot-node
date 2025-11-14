@@ -1,10 +1,11 @@
 const express = require("express");
-const {Storage} = require("@google-cloud/storage");
-const {exec} = require("child_process");
-const path = require("path");
+const { Storage } = require("@google-cloud/storage");
+const { exec } = require("child_process");
 const fs = require("fs");
 
 const app = express();
+app.use(express.json());
+
 const storage = new Storage();
 
 const AUDIO_BUCKET = "video-audioyt";
@@ -19,42 +20,44 @@ app.post("/process-next-video", async (req, res) => {
   const outputFile = "output-test.mp4";
 
   try {
-    // Download files
-    await storage.bucket(AUDIO_BUCKET).file(audioFile).download({destination: audioFile});
-    await storage.bucket(IMAGE_BUCKET).file(imageFile).download({destination: imageFile});
+    // Download test files
+    await storage.bucket(AUDIO_BUCKET).file(audioFile).download({ destination: audioFile });
+    await storage.bucket(IMAGE_BUCKET).file(imageFile).download({ destination: imageFile });
+    console.log("Files downloaded successfully!");
 
-    console.log("Files downloaded!");
+    // FFmpeg command: create 10-sec video
+    const cmd = `ffmpeg -loop 1 -i ${imageFile} -i ${audioFile} -c:v libx264 -t 10 -pix_fmt yuv420p -vf scale=1280:720 ${outputFile}`;
 
-    // FFmpeg test command: combine image + audio → MP4
-    const ffmpegCmd = `ffmpeg -loop 1 -i ${imageFile} -i ${audioFile} -c:v libx264 -t 10 -pix_fmt yuv420p -vf scale=1280:720 ${outputFile}`;
-
-    exec(ffmpegCmd, async (err) => {
+    exec(cmd, async (err, stdout, stderr) => {
       if (err) {
-        console.error("FFmpeg Error:", err);
-        return res.status(500).json({error: "FFmpeg failed"});
+        console.log("FFmpeg Error:", stderr);
+        return res.status(500).json({ error: "FFmpeg failed" });
       }
 
-      console.log("FFmpeg success! Uploading...");
+      console.log("FFmpeg success! Uploading final video...");
 
       await storage.bucket(OUTPUT_BUCKET).upload(outputFile);
 
-      console.log("Upload done!");
-
-      // Cleanup local files
+      // Cleanup
       fs.unlinkSync(audioFile);
       fs.unlinkSync(imageFile);
       fs.unlinkSync(outputFile);
 
-      return res.json({success: true, message: "Test video created + uploaded!"});
+      res.json({
+        status: "success",
+        message: "Test video generated & uploaded!"
+      });
     });
 
   } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({error: error.message});
+    console.error("Test error:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-app.get("/", (req, res) => res.send("Autopilot Test Ready!"));
+app.get("/", (req, res) => {
+  res.send("YouTube autopilot Cloud Run service is running.");
+});
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Server running on port", PORT));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
