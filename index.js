@@ -1,5 +1,5 @@
-
 const express = require("express");
+const { google } = require("googleapis");
 const { Storage } = require("@google-cloud/storage");
 const { exec } = require("child_process");
 const fs = require("fs");
@@ -7,57 +7,132 @@ const fs = require("fs");
 const app = express();
 app.use(express.json());
 
+// --------------------------
+// GOOGLE CLOUD STORAGE SETUP
+// --------------------------
 const storage = new Storage();
 
 const AUDIO_BUCKET = "video-audioyt";
 const IMAGE_BUCKET = "video-imagesyt";
-const OUTPUT_BUCKET = "video-finalyt";
+const FINAL_BUCKET = "video-finalyt";
 
+// --------------------------
+// GOOGLE SHEETS SETUP
+// --------------------------
+const SHEET_ID = "1AIJohtOcdTBm5yRLkZvolfvHVLOG4Xgl-kQagxiSInI";
+const RANGE = "Sheet1!A:F";
+
+const auth = new google.auth.GoogleAuth({
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+const sheets = google.sheets({ version: "v4", auth });
+
+// --------------------------
+// FETCH NEXT "NEW" VIDEO ROW
+// --------------------------
+async function getNextVideo() {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: RANGE,
+  });
+
+  const rows = res.data.values;
+
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][5] === "NEW") {
+      return {
+        rowIndex: i + 1,
+        row: rows[i],
+      };
+    }
+  }
+  return null;
+}
+
+// --------------------------
+// UPDATE STATUS IN SHEET
+// --------------------------
+async function updateStatus(rowIndex, status) {
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: `Sheet1!F${rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[status]],
+    },
+  });
+}
+
+// --------------------------
+// PROCESS NEXT VIDEO
+// --------------------------
 app.post("/process-next-video", async (req, res) => {
-  console.log("Starting test video generation...");
-
-  const audioFile = "test.mp3";
-  const imageFile = "test.jpg";
-  const outputFile = "output-test.mp4";
-
   try {
-    // Download test files
-    await storage.bucket(AUDIO_BUCKET).file(audioFile).download({ destination: audioFile });
-    await storage.bucket(IMAGE_BUCKET).file(imageFile).download({ destination: imageFile });
-    console.log("Files downloaded successfully!");
+    console.log("STARTING VIDEO PROCESS...");
 
-    // FFmpeg command: create 10-sec video
-    const cmd = `ffmpeg -loop 1 -i ${imageFile} -i ${audioFile} -c:v libx264 -t 10 -pix_fmt yuv420p -vf scale=1280:720 ${outputFile}`;
+    const next = await getNextVideo();
+    if (!next) {
+      return res.json({ msg: "No NEW videos found." });
+    }
 
-    exec(cmd, async (err, stdout, stderr) => {
-      if (err) {
-        console.log("FFmpeg Error:", stderr);
-        return res.status(500).json({ error: "FFmpeg failed" });
-      }
+    const [id, title] = next.row;
 
-      console.log("FFmpeg success! Uploading final video...");
+    // UPDATE STATUS → PROCESSING
+    await updateStatus(next.rowIndex, "PROCESSING");
 
-      await storage.bucket(OUTPUT_BUCKET).upload(outputFile);
+    // --------------------------------------------------
+    // DOWNLOAD AUDIO + IMAGE FROM CLOUD STORAGE
+    // --------------------------------------------------
+    await storage.bucket(AUDIO_BUCKET).file("test.mp3").download({ destination: "audio.mp3" });
+    await storage.bucket(IMAGE_BUCKET).file("test.jpg").download({ destination: "image.jpg" });
 
-      // Cleanup
-      fs.unlinkSync(audioFile);
-      fs.unlinkSync(imageFile);
-      fs.unlinkSync(outputFile);
+    console.log("Files downloaded successfully.");
 
-      res.json({
-        status: "success",
-        message: "Test video generated & uploaded!"
+    // --------------------------------------------------
+    // CREATE VIDEO USING FFMPEG
+    // --------------------------------------------------
+    const output = `video-${id}.mp4`;
+
+    const ffmpegCommand = `
+      ffmpeg -loop 1 -i image.jpg -i audio.mp3 \
+      -c:v libx264 -tune stillimage -c:a aac -b:a 192k \
+      -pix_fmt yuv420p -vf scale=1280:720 -shortest ${output}
+    `;
+
+    await new Promise((resolve, reject) => {
+      exec(ffmpegCommand, (err) => {
+        if (err) reject(err);
+        else resolve();
       });
     });
 
-  } catch (error) {
-    console.error("Test error:", error);
-    res.status(500).json({ error: error.message });
+    console.log("FFmpeg video created.");
+
+    // --------------------------------------------------
+    // UPLOAD FINAL VIDEO
+    // --------------------------------------------------
+    await storage.bucket(FINAL_BUCKET).upload(output);
+    console.log("Video uploaded.");
+
+    // UPDATE STATUS → DONE
+    await updateStatus(next.rowIndex, "DONE");
+
+    // CLEANUP
+    ["audio.mp3", "image.jpg", output].forEach((f) => {
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    });
+
+    return res.json({ ok: true, message: "Video generated successfully!", video: output });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
+// --------------------------
 app.get("/", (req, res) => {
-  res.send("YouTube autopilot Cloud Run service is running.");
+  res.send("YouTube Autopilot Cloud Run Service Running.");
 });
 
 const PORT = process.env.PORT || 8080;
